@@ -3,6 +3,7 @@ import streamlit as st
 from datetime import datetime
 import re
 import os
+import hashlib
 
 # Page configuration
 st.set_page_config(
@@ -35,36 +36,79 @@ def load_food_database():
 foods, search_index = load_food_database()
 
 # ----------------------------
-# 2. User management with PERSISTENT storage
+# 2. User management with ISOLATED storage
 # ----------------------------
-USERS_FILE = "nutrition_users.json"
+USERS_DIR = "user_data"
 
-def load_users():
-    """Safely load user data from file"""
+def ensure_users_dir():
+    """Create user data directory if it doesn't exist"""
+    if not os.path.exists(USERS_DIR):
+        os.makedirs(USERS_DIR)
+
+def get_user_file(username):
+    """Get the file path for a specific user's data"""
+    # Create a safe filename from username
+    safe_username = "".join(c for c in username if c.isalnum() or c in (' ', '-', '_')).rstrip()
+    if not safe_username:
+        safe_username = "default"
+    return os.path.join(USERS_DIR, f"{safe_username}.json")
+
+def load_user_data(username):
+    """Load data for a specific user"""
+    ensure_users_dir()
+    user_file = get_user_file(username)
+    
     try:
-        if os.path.exists(USERS_FILE):
-            with open(USERS_FILE, "r", encoding="utf-8") as f:
+        if os.path.exists(user_file):
+            with open(user_file, "r", encoding="utf-8") as f:
                 return json.load(f)
     except (json.JSONDecodeError, Exception) as e:
-        st.warning(f"⚠️ Could not load user data: {e}")
-    return {}
+        st.warning(f"⚠️ Could not load user data for {username}: {e}")
+    
+    # Return default structure if no file exists
+    return {
+        "profile": None,
+        "food_logs": [],
+        "water_logs": []
+    }
 
-def save_users(users_data):
-    """Save user data to file"""
+def save_user_data(username, user_data):
+    """Save data for a specific user"""
     try:
-        with open(USERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(users_data, f, indent=2, ensure_ascii=False)
+        ensure_users_dir()
+        user_file = get_user_file(username)
+        
+        with open(user_file, "w", encoding="utf-8") as f:
+            json.dump(user_data, f, indent=2, ensure_ascii=False)
         return True
     except Exception as e:
-        st.error(f"❌ Error saving user data: {e}")
+        st.error(f"❌ Error saving user data for {username}: {e}")
         return False
 
-# Initialize session state
-if 'users' not in st.session_state:
-    st.session_state.users = load_users()
+def get_all_usernames():
+    """Get list of all existing usernames"""
+    ensure_users_dir()
+    usernames = []
     
-if 'active_user' not in st.session_state:
-    st.session_state.active_user = None
+    try:
+        for filename in os.listdir(USERS_DIR):
+            if filename.endswith('.json'):
+                username = filename[:-5]  # Remove .json extension
+                usernames.append(username)
+    except Exception as e:
+        st.warning(f"⚠️ Could not list users: {e}")
+    
+    return usernames
+
+# ----------------------------
+# 3. Session State Management
+# ----------------------------
+# Initialize session state
+if 'current_user' not in st.session_state:
+    st.session_state.current_user = None
+    
+if 'user_data' not in st.session_state:
+    st.session_state.user_data = None
     
 if 'show_create_user' not in st.session_state:
     st.session_state.show_create_user = False
@@ -79,7 +123,7 @@ if 'recent_water_logs' not in st.session_state:
     st.session_state.recent_water_logs = []
 
 # ----------------------------
-# 3. Helper functions
+# 4. Helper functions
 # ----------------------------
 def validate_user_data(user_data):
     """Validate user input ranges"""
@@ -137,37 +181,6 @@ def normalize_food_input(text):
         text = re.sub(r'\b' + word + r'\b', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
-
-def improve_ingredient_parsing(meal_input):
-    """Better ingredient parsing that handles various formats"""
-    ingredients = []
-    
-    parts = re.split(r'\band\b|,|\+', meal_input)
-    
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-            
-        weight_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:g|grams?)\b', part, re.IGNORECASE)
-        
-        if weight_match:
-            weight = float(weight_match.group(1))
-            food_name = re.sub(r'(\d+(?:\.\d+)?)\s*(?:g|grams?)\b', '', part).strip()
-            food_name = re.sub(r'^\s*(?:of|with|\-)\s*', '', food_name).strip()
-        else:
-            weight = 100
-            food_name = part
-            
-        food_name = normalize_food_input(food_name)
-        
-        if food_name:
-            ingredients.append({
-                "name": food_name,
-                "weight": weight
-            })
-    
-    return ingredients
 
 def is_basic_ingredient(food):
     """STRICT check if food is a basic ingredient"""
@@ -288,14 +301,39 @@ def detect_food_category(name):
     return ["meat, egg and fish", "fruits, vegetables, legumes and nuts", "cereals and potatoes", "dairy and eggs"]
 
 # ----------------------------
-# 4. Streamlit UI Components
+# 5. Streamlit UI Components
 # ----------------------------
+def show_user_login():
+    """User login/selection interface"""
+    st.header("🔐 User Login")
+    
+    # Get all existing usernames
+    existing_users = get_all_usernames()
+    
+    if existing_users:
+        st.subheader("🔄 Switch to Existing User")
+        selected_user = st.selectbox("Select your profile:", existing_users)
+        
+        if st.button("Login", type="primary"):
+            # Load user data
+            user_data = load_user_data(selected_user)
+            st.session_state.current_user = selected_user
+            st.session_state.user_data = user_data
+            st.session_state.show_create_user = False
+            st.success(f"✨ Welcome back, {selected_user}!")
+            st.rerun()
+    
+    st.subheader("🆕 Or Create New Profile")
+    if st.button("Create New User"):
+        st.session_state.show_create_user = True
+        st.rerun()
+
 def show_user_creation():
     """User creation form"""
-    st.header("👤 Create New User")
+    st.header("👤 Create New Profile")
     
     with st.form("create_user"):
-        name = st.text_input("Username")
+        name = st.text_input("Choose a Username", placeholder="Enter a unique username")
         col1, col2 = st.columns(2)
         with col1:
             age = st.number_input("Age", min_value=15, max_value=100, value=25)
@@ -308,12 +346,18 @@ def show_user_creation():
         activity = st.selectbox("Activity Level", 
                               ["sedentary", "light", "moderate", "active", "very active"])
         
-        if st.form_submit_button("Create User"):
+        if st.form_submit_button("Create Profile"):
             if not name:
                 st.error("❌ Username cannot be empty.")
                 return
+            
+            # Check if username already exists
+            existing_users = get_all_usernames()
+            if name in existing_users:
+                st.error("❌ Username already exists. Please choose a different one.")
+                return
                 
-            user_data = {
+            user_profile = {
                 "name": name,
                 "age": age,
                 "gender": gender,
@@ -321,55 +365,64 @@ def show_user_creation():
                 "height": height,
                 "goal": goal,
                 "activity": activity,
-                "logs": [],
-                "water_logs": [],
                 "created_at": datetime.now().isoformat()
             }
             
-            errors = validate_user_data(user_data)
+            errors = validate_user_data(user_profile)
             if errors:
                 for error in errors:
                     st.error(error)
             else:
-                st.session_state.users[name] = user_data
-                st.session_state.active_user = user_data
-                st.session_state.show_create_user = False
-                # Save to file
-                save_users(st.session_state.users)
-                st.success(f"✨ Successfully created user: {name}")
-                st.rerun()
+                # Create new user data structure
+                user_data = {
+                    "profile": user_profile,
+                    "food_logs": [],
+                    "water_logs": []
+                }
+                
+                # Save user data
+                if save_user_data(name, user_data):
+                    st.session_state.current_user = name
+                    st.session_state.user_data = user_data
+                    st.session_state.show_create_user = False
+                    st.success(f"✨ Successfully created profile: {name}")
+                    st.rerun()
+                else:
+                    st.error("❌ Failed to create profile. Please try again.")
 
-def show_user_selection():
-    """User selection dropdown"""
-    if st.session_state.users:
-        user_names = list(st.session_state.users.keys())
-        current_user = st.session_state.active_user["name"] if st.session_state.active_user else user_names[0] if user_names else None
-        
-        selected_user = st.selectbox(
-            "Select User",
-            user_names,
-            index=user_names.index(current_user) if current_user in user_names else 0
-        )
-        
-        if selected_user and (not st.session_state.active_user or selected_user != st.session_state.active_user["name"]):
-            st.session_state.active_user = st.session_state.users[selected_user]
+def show_user_logout():
+    """User logout interface"""
+    if st.session_state.current_user:
+        if st.button("🚪 Logout"):
+            st.session_state.current_user = None
+            st.session_state.user_data = None
+            st.session_state.recent_meal_logs = []
+            st.session_state.recent_water_logs = []
+            st.session_state.meal_summary = {"calories": 0, "protein": 0, "carbs": 0, "fat": 0}
+            st.success("👋 Logged out successfully!")
             st.rerun()
+
+def save_current_user_data():
+    """Save current user's data to file"""
+    if st.session_state.current_user and st.session_state.user_data:
+        return save_user_data(st.session_state.current_user, st.session_state.user_data)
+    return False
 
 def log_water_ui():
     """Water logging interface"""
-    if not st.session_state.active_user:
-        st.warning("❌ Please create or select a user first.")
+    if not st.session_state.current_user:
+        st.warning("❌ Please login first.")
         return
         
     st.header("💧 Log Water")
     
     # Calculate water target and progress
-    user = st.session_state.active_user
-    water_target_ml = calculate_water_target(user)
+    user_profile = st.session_state.user_data["profile"]
+    water_target_ml = calculate_water_target(user_profile)
     water_target_cups = round(water_target_ml / 240, 1)
     
     today = datetime.now().strftime("%Y-%m-%d")
-    water_logs_today = [x for x in user.get("water_logs", []) if x["timestamp"].startswith(today)]
+    water_logs_today = [x for x in st.session_state.user_data.get("water_logs", []) if x["timestamp"].startswith(today)]
     total_water_today = sum(x["amount"] for x in water_logs_today)
     water_percentage = min(100, (total_water_today / water_target_ml) * 100)
     
@@ -427,7 +480,7 @@ def log_water_ui():
 
 def log_water_amount(amount):
     """Log water intake"""
-    if not st.session_state.active_user:
+    if not st.session_state.current_user:
         return
         
     water_log = {
@@ -436,24 +489,23 @@ def log_water_amount(amount):
     }
     
     # Add to user's water logs
-    if "water_logs" not in st.session_state.active_user:
-        st.session_state.active_user["water_logs"] = []
-    st.session_state.active_user["water_logs"].append(water_log)
+    if "water_logs" not in st.session_state.user_data:
+        st.session_state.user_data["water_logs"] = []
+    st.session_state.user_data["water_logs"].append(water_log)
     
     # Update recent logs
     st.session_state.recent_water_logs.append(water_log)
     
-    # Update the main users dictionary and save
-    st.session_state.users[st.session_state.active_user["name"]] = st.session_state.active_user
-    save_users(st.session_state.users)
+    # Save user data
+    save_current_user_data()
     
     st.success(f"✅ Logged {amount} ml of water!")
     st.rerun()
 
 def log_food_ui():
     """Food logging interface"""
-    if not st.session_state.active_user:
-        st.warning("❌ Please create or select a user first.")
+    if not st.session_state.current_user:
+        st.warning("❌ Please login first.")
         return
         
     st.header("🍽️ Log Food")
@@ -551,7 +603,7 @@ def log_food_ui():
                         }
                         
                         # Add to user's logs
-                        st.session_state.active_user["logs"].append(log_entry)
+                        st.session_state.user_data["food_logs"].append(log_entry)
                         
                         # Update recent logs and summary
                         st.session_state.recent_meal_logs.append(log_entry)
@@ -560,9 +612,8 @@ def log_food_ui():
                         st.session_state.meal_summary["carbs"] += carbs
                         st.session_state.meal_summary["fat"] += fat
                         
-                        # Update the main users dictionary and save
-                        st.session_state.users[st.session_state.active_user["name"]] = st.session_state.active_user
-                        save_users(st.session_state.users)
+                        # Save user data
+                        save_current_user_data()
                         
                         st.success(f"✅ Added {food['names']['en']} ({serving_size}g)")
                         st.rerun()
@@ -601,7 +652,7 @@ def log_food_ui():
                     }
                     
                     # Add to user's logs
-                    st.session_state.active_user["logs"].append(log_entry)
+                    st.session_state.user_data["food_logs"].append(log_entry)
                     
                     # Update recent logs and summary
                     st.session_state.recent_meal_logs.append(log_entry)
@@ -610,9 +661,8 @@ def log_food_ui():
                     st.session_state.meal_summary["carbs"] += carbs
                     st.session_state.meal_summary["fat"] += fat
                     
-                    # Update the main users dictionary and save
-                    st.session_state.users[st.session_state.active_user["name"]] = st.session_state.active_user
-                    save_users(st.session_state.users)
+                    # Save user data
+                    save_current_user_data()
                     
                     st.success(f"✅ Added {food_input} ({serving_size}g) - Manual Entry")
                     st.rerun()
@@ -654,7 +704,7 @@ def log_food_ui():
                 }
                 
                 # Add to user's logs
-                st.session_state.active_user["logs"].append(log_entry)
+                st.session_state.user_data["food_logs"].append(log_entry)
                 
                 # Update recent logs and summary
                 st.session_state.recent_meal_logs.append(log_entry)
@@ -663,9 +713,8 @@ def log_food_ui():
                 st.session_state.meal_summary["carbs"] += carbs
                 st.session_state.meal_summary["fat"] += fat
                 
-                # Update the main users dictionary and save
-                st.session_state.users[st.session_state.active_user["name"]] = st.session_state.active_user
-                save_users(st.session_state.users)
+                # Save user data
+                save_current_user_data()
                 
                 st.success(f"✅ Added {food_input} ({serving_size}g) - Manual Entry")
                 st.rerun()
@@ -679,17 +728,17 @@ def log_food_ui():
 
 def show_daily_summary_ui():
     """Daily summary interface"""
-    if not st.session_state.active_user:
-        st.warning("❌ Please create or select a user first.")
+    if not st.session_state.current_user:
+        st.warning("❌ Please login first.")
         return
         
     st.header("📊 Daily Summary")
     
     # Calculate today's nutrition
-    user = st.session_state.active_user
+    user_data = st.session_state.user_data
     today = datetime.now().strftime("%Y-%m-%d")
-    logs = [x for x in user["logs"] if x["timestamp"].startswith(today)]
-    water_logs = [x for x in user.get("water_logs", []) if x["timestamp"].startswith(today)]
+    logs = [x for x in user_data["food_logs"] if x["timestamp"].startswith(today)]
+    water_logs = [x for x in user_data.get("water_logs", []) if x["timestamp"].startswith(today)]
     
     # Show food history
     if logs:
@@ -710,7 +759,7 @@ def show_daily_summary_ui():
     if water_logs:
         st.subheader("💧 Today's Water Log")
         total_water = sum(x["amount"] for x in water_logs)
-        water_target = calculate_water_target(user)
+        water_target = calculate_water_target(user_data["profile"])
         water_percentage = min(100, (total_water / water_target) * 100)
         
         col1, col2, col3 = st.columns(3)
@@ -740,8 +789,8 @@ def show_daily_summary_ui():
     total_carbs = sum(x["nutrition"]["carbs"] for x in logs)
     total_fat = sum(x["nutrition"]["fat"] for x in logs)
     
-    target_cal = daily_calories(user)
-    target_protein = user["weight"] * 1.8
+    target_cal = daily_calories(user_data["profile"])
+    target_protein = user_data["profile"]["weight"] * 1.8
     remaining_calories = target_cal - total_cal
     
     # Display nutrition summary
@@ -780,7 +829,7 @@ def show_daily_summary_ui():
     # Water recommendations
     if water_logs:
         total_water = sum(x["amount"] for x in water_logs)
-        water_target = calculate_water_target(user)
+        water_target = calculate_water_target(user_data["profile"])
         if total_water < water_target * 0.7:
             st.warning("• Drink more water to meet your hydration goal")
         elif total_water >= water_target:
@@ -790,43 +839,45 @@ def show_daily_summary_ui():
 
 def show_user_profile():
     """User profile display"""
-    if not st.session_state.active_user:
-        st.warning("❌ Please create or select a user first.")
+    if not st.session_state.current_user:
+        st.warning("❌ Please login first.")
         return
         
-    user = st.session_state.active_user
+    user_data = st.session_state.user_data
+    user_profile = user_data["profile"]
+    
     st.header("👤 Your Profile")
     
     col1, col2 = st.columns(2)
     with col1:
-        st.write(f"**Name:** {user['name']}")
-        st.write(f"**Age:** {user['age']} years")
-        st.write(f"**Gender:** {user['gender']}")
+        st.write(f"**Name:** {user_profile['name']}")
+        st.write(f"**Age:** {user_profile['age']} years")
+        st.write(f"**Gender:** {user_profile['gender']}")
     with col2:
-        st.write(f"**Weight:** {user['weight']} kg")
-        st.write(f"**Height:** {user['height']} cm")
-        st.write(f"**Goal:** {user['goal']}")
+        st.write(f"**Weight:** {user_profile['weight']} kg")
+        st.write(f"**Height:** {user_profile['height']} cm")
+        st.write(f"**Goal:** {user_profile['goal']}")
     
     # Show user history stats
-    total_logs = len(user["logs"])
-    total_water_logs = len(user.get("water_logs", []))
-    unique_days = len(set(log["timestamp"][:10] for log in user["logs"]))
+    total_food_logs = len(user_data["food_logs"])
+    total_water_logs = len(user_data.get("water_logs", []))
+    unique_days = len(set(log["timestamp"][:10] for log in user_data["food_logs"]))
     
     st.subheader("📊 History Stats")
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Food Logs", total_logs)
+        st.metric("Food Logs", total_food_logs)
     with col2:
         st.metric("Water Logs", total_water_logs)
     with col3:
         st.metric("Days Tracked", unique_days)
     
     # Calculate and display targets
-    bmr = calculate_bmr(user)
-    tdee = calculate_tdee(user)
-    target_cal = daily_calories(user)
-    target_protein = user["weight"] * 1.8
-    water_target = calculate_water_target(user)
+    bmr = calculate_bmr(user_profile)
+    tdee = calculate_tdee(user_profile)
+    target_cal = daily_calories(user_profile)
+    target_protein = user_profile["weight"] * 1.8
+    water_target = calculate_water_target(user_profile)
     
     st.subheader("🎯 Daily Targets")
     col1, col2, col3, col4 = st.columns(4)
@@ -845,68 +896,79 @@ def show_user_profile():
     st.write(f"Daily water target: **{water_target:.0f} ml** ({water_target_cups} cups)")
 
 # ----------------------------
-# 5. Main App
+# 6. Main App
 # ----------------------------
 def main():
     st.title("🍎 Smart Nutrition Tracker")
     st.markdown("Track your nutrition and hydration with basic ingredients only!")
     
-    # Sidebar for user management
-    with st.sidebar:
-        st.header("User Management")
-        
-        if st.button("Create New User"):
-            st.session_state.show_create_user = True
-            
-        show_user_selection()
-        
-        if st.session_state.active_user:
-            st.success(f"Active: {st.session_state.active_user['name']}")
-            
-            # Show quick stats in sidebar
-            today = datetime.now().strftime("%Y-%m-%d")
-            today_logs = [x for x in st.session_state.active_user["logs"] if x["timestamp"].startswith(today)]
-            today_water = [x for x in st.session_state.active_user.get("water_logs", []) if x["timestamp"].startswith(today)]
-            
-            total_cal_today = sum(x["nutrition"]["calories"] for x in today_logs)
-            total_water_today = sum(x["amount"] for x in today_water)
-            target_cal = daily_calories(st.session_state.active_user)
-            water_target = calculate_water_target(st.session_state.active_user)
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Calories", f"{total_cal_today:.0f}", f"{total_cal_today - target_cal:.0f}")
-            with col2:
-                st.metric("Water", f"{total_water_today} ml", f"{total_water_today - water_target:.0f}")
-            
-            if st.button("Delete Current User"):
-                if st.session_state.active_user['name'] in st.session_state.users:
-                    del st.session_state.users[st.session_state.active_user['name']]
-                    save_users(st.session_state.users)
-                    st.session_state.active_user = None
-                    st.session_state.recent_meal_logs = []
-                    st.session_state.recent_water_logs = []
-                    st.session_state.meal_summary = {"calories": 0, "protein": 0, "carbs": 0, "fat": 0}
-                    st.rerun()
+    # Show login screen if no user is logged in
+    if not st.session_state.current_user:
+        if st.session_state.show_create_user:
+            show_user_creation()
+            if st.button("← Back to Login"):
+                st.session_state.show_create_user = False
+                st.rerun()
+        else:
+            show_user_login()
+        return
     
-    # Main content area
-    if st.session_state.show_create_user:
-        show_user_creation()
-        if st.button("Back to Main"):
-            st.session_state.show_create_user = False
-            st.rerun()
-    else:
-        # Navigation
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "🍽️ Log Food", "💧 Log Water", "👤 Profile"])
-        
-        with tab1:
-            show_daily_summary_ui()
-        with tab2:
-            log_food_ui()
-        with tab3:
-            log_water_ui()
-        with tab4:
-            show_user_profile()
+    # User is logged in - show main app
+    st.sidebar.header("👤 User Session")
+    st.sidebar.success(f"Logged in as: **{st.session_state.current_user}**")
+    
+    # Show quick stats in sidebar
+    today = datetime.now().strftime("%Y-%m-%d")
+    today_food_logs = [x for x in st.session_state.user_data["food_logs"] if x["timestamp"].startswith(today)]
+    today_water_logs = [x for x in st.session_state.user_data.get("water_logs", []) if x["timestamp"].startswith(today)]
+    
+    total_cal_today = sum(x["nutrition"]["calories"] for x in today_food_logs)
+    total_water_today = sum(x["amount"] for x in today_water_logs)
+    target_cal = daily_calories(st.session_state.user_data["profile"])
+    water_target = calculate_water_target(st.session_state.user_data["profile"])
+    
+    st.sidebar.subheader("📊 Today's Progress")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.sidebar.metric("Calories", f"{total_cal_today:.0f}", f"{total_cal_today - target_cal:.0f}")
+    with col2:
+        st.sidebar.metric("Water", f"{total_water_today} ml", f"{total_water_today - water_target:.0f}")
+    
+    # Logout button
+    if st.sidebar.button("🚪 Logout", type="secondary"):
+        st.session_state.current_user = None
+        st.session_state.user_data = None
+        st.session_state.recent_meal_logs = []
+        st.session_state.recent_water_logs = []
+        st.session_state.meal_summary = {"calories": 0, "protein": 0, "carbs": 0, "fat": 0}
+        st.rerun()
+    
+    # Delete account button (with confirmation)
+    with st.sidebar.expander("⚠️ Account Management"):
+        st.warning("This will permanently delete your profile and all data!")
+        if st.button("🗑️ Delete My Account", type="primary"):
+            user_file = get_user_file(st.session_state.current_user)
+            try:
+                if os.path.exists(user_file):
+                    os.remove(user_file)
+                    st.session_state.current_user = None
+                    st.session_state.user_data = None
+                    st.success("✅ Account deleted successfully!")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"❌ Error deleting account: {e}")
+    
+    # Main app navigation
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "🍽️ Log Food", "💧 Log Water", "👤 Profile"])
+    
+    with tab1:
+        show_daily_summary_ui()
+    with tab2:
+        log_food_ui()
+    with tab3:
+        log_water_ui()
+    with tab4:
+        show_user_profile()
 
 if __name__ == "__main__":
     main()
