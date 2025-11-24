@@ -75,6 +75,9 @@ if 'recent_meal_logs' not in st.session_state:
 if 'meal_summary' not in st.session_state:
     st.session_state.meal_summary = {"calories": 0, "protein": 0, "carbs": 0, "fat": 0}
 
+if 'recent_water_logs' not in st.session_state:
+    st.session_state.recent_water_logs = []
+
 # ----------------------------
 # 3. Helper functions
 # ----------------------------
@@ -121,6 +124,10 @@ def daily_calories(user):
     elif user["goal"] == "gain":
         return base + 500
     return base
+
+def calculate_water_target(user):
+    """Calculate daily water target based on weight (35ml per kg)"""
+    return user["weight"] * 35
 
 def normalize_food_input(text):
     """Clean and normalize food input"""
@@ -315,6 +322,7 @@ def show_user_creation():
                 "goal": goal,
                 "activity": activity,
                 "logs": [],
+                "water_logs": [],
                 "created_at": datetime.now().isoformat()
             }
             
@@ -346,6 +354,101 @@ def show_user_selection():
         if selected_user and (not st.session_state.active_user or selected_user != st.session_state.active_user["name"]):
             st.session_state.active_user = st.session_state.users[selected_user]
             st.rerun()
+
+def log_water_ui():
+    """Water logging interface"""
+    if not st.session_state.active_user:
+        st.warning("❌ Please create or select a user first.")
+        return
+        
+    st.header("💧 Log Water")
+    
+    # Calculate water target and progress
+    user = st.session_state.active_user
+    water_target_ml = calculate_water_target(user)
+    water_target_cups = round(water_target_ml / 240, 1)
+    
+    today = datetime.now().strftime("%Y-%m-%d")
+    water_logs_today = [x for x in user.get("water_logs", []) if x["timestamp"].startswith(today)]
+    total_water_today = sum(x["amount"] for x in water_logs_today)
+    water_percentage = min(100, (total_water_today / water_target_ml) * 100)
+    
+    # Show water progress
+    st.subheader("📊 Hydration Progress")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Today's Water", f"{total_water_today:.0f} ml")
+    with col2:
+        st.metric("Daily Target", f"{water_target_ml:.0f} ml")
+    with col3:
+        st.metric("Progress", f"{water_percentage:.1f}%")
+    
+    # Progress bar
+    st.progress(water_percentage / 100)
+    
+    # Show recent water logs
+    if st.session_state.recent_water_logs:
+        st.subheader("🕒 Recent Water Logs")
+        for log in st.session_state.recent_water_logs[-5:]:
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.write(f"💧 {log['amount']} ml")
+            with col2:
+                st.write(f"⏰ {log['timestamp'][11:16]}")
+    
+    # Water logging interface
+    st.subheader("➕ Log Water Intake")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        # Quick add buttons
+        st.write("**Quick Add:**")
+        if st.button("🥛 Glass (240ml)", use_container_width=True):
+            log_water_amount(240)
+        if st.button("💧 Bottle (500ml)", use_container_width=True):
+            log_water_amount(500)
+        if st.button("🚰 Large (1000ml)", use_container_width=True):
+            log_water_amount(1000)
+    
+    with col2:
+        # Custom amount
+        st.write("**Custom Amount:**")
+        custom_amount = st.number_input("Amount (ml)", min_value=50, max_value=2000, value=250, step=50)
+        if st.button("💧 Add Custom Amount", use_container_width=True):
+            log_water_amount(custom_amount)
+    
+    with col3:
+        # Water tips
+        st.write("💡 **Hydration Tips:**")
+        st.caption("• Drink 2 glasses after waking up")
+        st.caption("• 1 glass before each meal")
+        st.caption("• Keep water bottle nearby")
+        st.caption("• Drink during workouts")
+
+def log_water_amount(amount):
+    """Log water intake"""
+    if not st.session_state.active_user:
+        return
+        
+    water_log = {
+        "amount": amount,
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    # Add to user's water logs
+    if "water_logs" not in st.session_state.active_user:
+        st.session_state.active_user["water_logs"] = []
+    st.session_state.active_user["water_logs"].append(water_log)
+    
+    # Update recent logs
+    st.session_state.recent_water_logs.append(water_log)
+    
+    # Update the main users dictionary and save
+    st.session_state.users[st.session_state.active_user["name"]] = st.session_state.active_user
+    save_users(st.session_state.users)
+    
+    st.success(f"✅ Logged {amount} ml of water!")
+    st.rerun()
 
 def log_food_ui():
     """Food logging interface"""
@@ -586,6 +689,7 @@ def show_daily_summary_ui():
     user = st.session_state.active_user
     today = datetime.now().strftime("%Y-%m-%d")
     logs = [x for x in user["logs"] if x["timestamp"].startswith(today)]
+    water_logs = [x for x in user.get("water_logs", []) if x["timestamp"].startswith(today)]
     
     # Show food history
     if logs:
@@ -602,16 +706,35 @@ def show_daily_summary_ui():
                 with col4:
                     st.metric("Fat", f"{log['nutrition']['fat']:.1f}g")
     
-    if not logs:
-        st.info("📊 No food logged today.")
+    # Show water history
+    if water_logs:
+        st.subheader("💧 Today's Water Log")
+        total_water = sum(x["amount"] for x in water_logs)
+        water_target = calculate_water_target(user)
+        water_percentage = min(100, (total_water / water_target) * 100)
         
-        # Water reminder
-        water_target_ml = user["weight"] * 35
-        water_target_cups = round(water_target_ml / 240, 1)
-        st.info(f"💧 Don't forget to drink {water_target_ml:.0f} ml ({water_target_cups} cups) of water today!")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Water", f"{total_water} ml")
+        with col2:
+            st.metric("Water Target", f"{water_target:.0f} ml")
+        with col3:
+            st.metric("Progress", f"{water_percentage:.1f}%")
+        
+        st.progress(water_percentage / 100)
+        
+        for i, log in enumerate(water_logs):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.write(f"💧 {log['amount']} ml")
+            with col2:
+                st.write(f"⏰ {log['timestamp'][11:16]}")
+    
+    if not logs and not water_logs:
+        st.info("📊 No food or water logged today.")
         return
     
-    # Calculate totals
+    # Calculate nutrition totals
     total_cal = sum(x["nutrition"]["calories"] for x in logs)
     total_pro = sum(x["nutrition"]["protein"] for x in logs)
     total_carbs = sum(x["nutrition"]["carbs"] for x in logs)
@@ -621,53 +744,49 @@ def show_daily_summary_ui():
     target_protein = user["weight"] * 1.8
     remaining_calories = target_cal - total_cal
     
-    # Water targets
-    water_target_ml = user["weight"] * 35
-    water_target_cups = round(water_target_ml / 240, 1)
-    
-    # Display summary
-    st.subheader("📈 Nutrition Summary")
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("🔥 Calories", f"{total_cal:.1f}", f"{total_cal - target_cal:.1f}")
-    with col2:
-        st.metric("💪 Protein", f"{total_pro:.1f}g", f"{total_pro - target_protein:.1f}")
-    with col3:
-        st.metric("🥖 Carbs", f"{total_carbs:.1f}g")
-    with col4:
-        st.metric("🥑 Fat", f"{total_fat:.1f}g")
-    
-    # Progress bar for calories
-    cal_percentage = min(100, (total_cal / target_cal) * 100) if target_cal > 0 else 0
-    st.progress(cal_percentage / 100)
-    st.write(f"Calorie Progress: {cal_percentage:.1f}%")
-    
-    # Water reminder
-    st.subheader("💧 Hydration Status")
-    st.write(f"💦 Daily water target: {water_target_ml:.0f} ml ({water_target_cups} cups)")
-    
-    # Time-based water reminder
-    current_hour = datetime.now().hour
-    if current_hour < 12:
-        st.info("🌅 Morning: Aim for 3-4 glasses by lunch")
-    elif current_hour < 18:
-        st.info("☀️ Afternoon: Stay consistent with hydration")
-    else:
-        st.info("🌙 Evening: Complete your daily hydration")
+    # Display nutrition summary
+    if logs:
+        st.subheader("📈 Nutrition Summary")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("🔥 Calories", f"{total_cal:.1f}", f"{total_cal - target_cal:.1f}")
+        with col2:
+            st.metric("💪 Protein", f"{total_pro:.1f}g", f"{total_pro - target_protein:.1f}")
+        with col3:
+            st.metric("🥖 Carbs", f"{total_carbs:.1f}g")
+        with col4:
+            st.metric("🥑 Fat", f"{total_fat:.1f}g")
+        
+        # Progress bar for calories
+        cal_percentage = min(100, (total_cal / target_cal) * 100) if target_cal > 0 else 0
+        st.progress(cal_percentage / 100)
+        st.write(f"Calorie Progress: {cal_percentage:.1f}%")
     
     # Recommendations
     st.subheader("💡 Recommendations")
-    if total_pro < target_protein * 0.7:
-        st.warning("• Add protein: chicken, fish, eggs, tofu")
-    elif total_pro >= target_protein:
-        st.success("• ✅ Great protein intake!")
+    if logs:
+        if total_pro < target_protein * 0.7:
+            st.warning("• Add protein: chicken, fish, eggs, tofu")
+        elif total_pro >= target_protein:
+            st.success("• ✅ Great protein intake!")
+        
+        if remaining_calories > 500:
+            st.info("• You have room for 1-2 more meals/snacks")
+        elif remaining_calories > 0:
+            st.info("• Plan your remaining calories carefully")
+        else:
+            st.warning("• You've met your calorie target for today")
     
-    if remaining_calories > 500:
-        st.info("• You have room for 1-2 more meals/snacks")
-    elif remaining_calories > 0:
-        st.info("• Plan your remaining calories carefully")
-    else:
-        st.warning("• You've met your calorie target for today")
+    # Water recommendations
+    if water_logs:
+        total_water = sum(x["amount"] for x in water_logs)
+        water_target = calculate_water_target(user)
+        if total_water < water_target * 0.7:
+            st.warning("• Drink more water to meet your hydration goal")
+        elif total_water >= water_target:
+            st.success("• ✅ Excellent hydration today!")
+        else:
+            st.info("• Good hydration progress, keep going!")
 
 def show_user_profile():
     """User profile display"""
@@ -690,13 +809,16 @@ def show_user_profile():
     
     # Show user history stats
     total_logs = len(user["logs"])
+    total_water_logs = len(user.get("water_logs", []))
     unique_days = len(set(log["timestamp"][:10] for log in user["logs"]))
     
     st.subheader("📊 History Stats")
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Total Logs", total_logs)
+        st.metric("Food Logs", total_logs)
     with col2:
+        st.metric("Water Logs", total_water_logs)
+    with col3:
         st.metric("Days Tracked", unique_days)
     
     # Calculate and display targets
@@ -704,6 +826,7 @@ def show_user_profile():
     tdee = calculate_tdee(user)
     target_cal = daily_calories(user)
     target_protein = user["weight"] * 1.8
+    water_target = calculate_water_target(user)
     
     st.subheader("🎯 Daily Targets")
     col1, col2, col3, col4 = st.columns(4)
@@ -717,17 +840,16 @@ def show_user_profile():
         st.metric("Target Protein", f"{target_protein:.1f} g")
     
     # Water recommendation
-    water_target_ml = user["weight"] * 35
-    water_target_cups = round(water_target_ml / 240, 1)
+    water_target_cups = round(water_target / 240, 1)
     st.subheader("💧 Hydration")
-    st.write(f"Daily water target: **{water_target_ml:.0f} ml** ({water_target_cups} cups)")
+    st.write(f"Daily water target: **{water_target:.0f} ml** ({water_target_cups} cups)")
 
 # ----------------------------
 # 5. Main App
 # ----------------------------
 def main():
     st.title("🍎 Smart Nutrition Tracker")
-    st.markdown("Track your nutrition with basic ingredients only!")
+    st.markdown("Track your nutrition and hydration with basic ingredients only!")
     
     # Sidebar for user management
     with st.sidebar:
@@ -744,10 +866,18 @@ def main():
             # Show quick stats in sidebar
             today = datetime.now().strftime("%Y-%m-%d")
             today_logs = [x for x in st.session_state.active_user["logs"] if x["timestamp"].startswith(today)]
-            total_cal_today = sum(x["nutrition"]["calories"] for x in today_logs)
-            target_cal = daily_calories(st.session_state.active_user)
+            today_water = [x for x in st.session_state.active_user.get("water_logs", []) if x["timestamp"].startswith(today)]
             
-            st.metric("Today's Calories", f"{total_cal_today:.0f}", f"{total_cal_today - target_cal:.0f}")
+            total_cal_today = sum(x["nutrition"]["calories"] for x in today_logs)
+            total_water_today = sum(x["amount"] for x in today_water)
+            target_cal = daily_calories(st.session_state.active_user)
+            water_target = calculate_water_target(st.session_state.active_user)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Calories", f"{total_cal_today:.0f}", f"{total_cal_today - target_cal:.0f}")
+            with col2:
+                st.metric("Water", f"{total_water_today} ml", f"{total_water_today - water_target:.0f}")
             
             if st.button("Delete Current User"):
                 if st.session_state.active_user['name'] in st.session_state.users:
@@ -755,6 +885,7 @@ def main():
                     save_users(st.session_state.users)
                     st.session_state.active_user = None
                     st.session_state.recent_meal_logs = []
+                    st.session_state.recent_water_logs = []
                     st.session_state.meal_summary = {"calories": 0, "protein": 0, "carbs": 0, "fat": 0}
                     st.rerun()
     
@@ -766,13 +897,15 @@ def main():
             st.rerun()
     else:
         # Navigation
-        tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "🍽️ Log Food", "👤 Profile"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "🍽️ Log Food", "💧 Log Water", "👤 Profile"])
         
         with tab1:
             show_daily_summary_ui()
         with tab2:
             log_food_ui()
         with tab3:
+            log_water_ui()
+        with tab4:
             show_user_profile()
 
 if __name__ == "__main__":
