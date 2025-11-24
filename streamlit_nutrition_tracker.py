@@ -4,7 +4,6 @@ from datetime import datetime
 import re
 import os
 import hashlib
-import secrets
 
 # Page configuration
 st.set_page_config(
@@ -37,7 +36,7 @@ def load_food_database():
 foods, search_index = load_food_database()
 
 # ----------------------------
-# 2. User management with PASSWORD PROTECTION
+# 2. User management with ISOLATED storage
 # ----------------------------
 USERS_DIR = "user_data"
 
@@ -48,13 +47,11 @@ def ensure_users_dir():
 
 def get_user_file(username):
     """Get the file path for a specific user's data"""
-    # Create a safe filename from username (hash it for privacy)
-    username_hash = hashlib.sha256(username.lower().encode()).hexdigest()[:16]
-    return os.path.join(USERS_DIR, f"{username_hash}.json")
-
-def hash_password(password):
-    """Hash a password for storage"""
-    return hashlib.sha256(password.encode()).hexdigest()
+    # Create a safe filename from username
+    safe_username = "".join(c for c in username if c.isalnum() or c in (' ', '-', '_')).rstrip()
+    if not safe_username:
+        safe_username = "default"
+    return os.path.join(USERS_DIR, f"{safe_username}.json")
 
 def load_user_data(username):
     """Load data for a specific user"""
@@ -66,9 +63,14 @@ def load_user_data(username):
             with open(user_file, "r", encoding="utf-8") as f:
                 return json.load(f)
     except (json.JSONDecodeError, Exception) as e:
-        st.warning(f"⚠️ Could not load user data: {e}")
+        st.warning(f"⚠️ Could not load user data for {username}: {e}")
     
-    return None
+    # Return default structure if no file exists
+    return {
+        "profile": None,
+        "food_logs": [],
+        "water_logs": []
+    }
 
 def save_user_data(username, user_data):
     """Save data for a specific user"""
@@ -80,30 +82,23 @@ def save_user_data(username, user_data):
             json.dump(user_data, f, indent=2, ensure_ascii=False)
         return True
     except Exception as e:
-        st.error(f"❌ Error saving user data: {e}")
+        st.error(f"❌ Error saving user data for {username}: {e}")
         return False
 
-def verify_password(username, password):
-    """Verify a user's password"""
-    user_data = load_user_data(username)
-    if user_data and "auth" in user_data:
-        return user_data["auth"]["password_hash"] == hash_password(password)
-    return False
-
-def create_new_user(username, password, profile_data):
-    """Create a new user with password protection"""
-    user_data = {
-        "auth": {
-            "username": username,
-            "password_hash": hash_password(password),
-            "created_at": datetime.now().isoformat()
-        },
-        "profile": profile_data,
-        "food_logs": [],
-        "water_logs": []
-    }
+def get_all_usernames():
+    """Get list of all existing usernames"""
+    ensure_users_dir()
+    usernames = []
     
-    return save_user_data(username, user_data)
+    try:
+        for filename in os.listdir(USERS_DIR):
+            if filename.endswith('.json'):
+                username = filename[:-5]  # Remove .json extension
+                usernames.append(username)
+    except Exception as e:
+        st.warning(f"⚠️ Could not list users: {e}")
+    
+    return usernames
 
 # ----------------------------
 # 3. Session State Management
@@ -114,9 +109,6 @@ if 'current_user' not in st.session_state:
     
 if 'user_data' not in st.session_state:
     st.session_state.user_data = None
-    
-if 'show_login' not in st.session_state:
-    st.session_state.show_login = True
     
 if 'show_create_user' not in st.session_state:
     st.session_state.show_create_user = False
@@ -312,47 +304,36 @@ def detect_food_category(name):
 # 5. Streamlit UI Components
 # ----------------------------
 def show_user_login():
-    """User login interface"""
-    st.header("🔐 Login to Your Account")
+    """User login/selection interface"""
+    st.header("🔐 User Login")
     
-    with st.form("login_form"):
-        username = st.text_input("Username", placeholder="Enter your username")
-        password = st.text_input("Password", type="password", placeholder="Enter your password")
+    # Get all existing usernames
+    existing_users = get_all_usernames()
+    
+    if existing_users:
+        st.subheader("🔄 Switch to Existing User")
+        selected_user = st.selectbox("Select your profile:", existing_users)
         
-        col1, col2 = st.columns(2)
-        with col1:
-            login_button = st.form_submit_button("🔓 Login", use_container_width=True)
-        with col2:
-            create_account_button = st.form_submit_button("🆕 Create Account", use_container_width=True)
-        
-        if login_button and username and password:
-            with st.spinner("Verifying credentials..."):
-                user_data = load_user_data(username)
-                if user_data and verify_password(username, password):
-                    st.session_state.current_user = username
-                    st.session_state.user_data = user_data
-                    st.session_state.show_login = False
-                    st.success(f"✨ Welcome back, {username}!")
-                    st.rerun()
-                else:
-                    st.error("❌ Invalid username or password")
-        
-        if create_account_button:
-            st.session_state.show_create_user = True
-            st.session_state.show_login = False
+        if st.button("Login", type="primary"):
+            # Load user data
+            user_data = load_user_data(selected_user)
+            st.session_state.current_user = selected_user
+            st.session_state.user_data = user_data
+            st.session_state.show_create_user = False
+            st.success(f"✨ Welcome back, {selected_user}!")
             st.rerun()
+    
+    st.subheader("🆕 Or Create New Profile")
+    if st.button("Create New User"):
+        st.session_state.show_create_user = True
+        st.rerun()
 
 def show_user_creation():
     """User creation form"""
-    st.header("👤 Create New Account")
+    st.header("👤 Create New Profile")
     
     with st.form("create_user"):
-        st.subheader("🔐 Account Details")
-        username = st.text_input("Choose a Username", placeholder="Enter a unique username")
-        password = st.text_input("Choose a Password", type="password", placeholder="Create a strong password")
-        confirm_password = st.text_input("Confirm Password", type="password", placeholder="Re-enter your password")
-        
-        st.subheader("📋 Profile Information")
+        name = st.text_input("Choose a Username", placeholder="Enter a unique username")
         col1, col2 = st.columns(2)
         with col1:
             age = st.number_input("Age", min_value=15, max_value=100, value=25)
@@ -365,31 +346,19 @@ def show_user_creation():
         activity = st.selectbox("Activity Level", 
                               ["sedentary", "light", "moderate", "active", "very active"])
         
-        if st.form_submit_button("Create Account"):
-            # Validate inputs
-            if not username:
+        if st.form_submit_button("Create Profile"):
+            if not name:
                 st.error("❌ Username cannot be empty.")
                 return
             
-            if not password:
-                st.error("❌ Password cannot be empty.")
-                return
-                
-            if password != confirm_password:
-                st.error("❌ Passwords do not match.")
-                return
-                
-            if len(password) < 4:
-                st.error("❌ Password must be at least 4 characters long.")
-                return
-            
             # Check if username already exists
-            if load_user_data(username) is not None:
+            existing_users = get_all_usernames()
+            if name in existing_users:
                 st.error("❌ Username already exists. Please choose a different one.")
                 return
                 
             user_profile = {
-                "name": username,
+                "name": name,
                 "age": age,
                 "gender": gender,
                 "weight": weight,
@@ -404,17 +373,34 @@ def show_user_creation():
                 for error in errors:
                     st.error(error)
             else:
-                # Create new user account
-                if create_new_user(username, password, user_profile):
-                    st.session_state.current_user = username
-                    st.session_state.user_data = load_user_data(username)
+                # Create new user data structure
+                user_data = {
+                    "profile": user_profile,
+                    "food_logs": [],
+                    "water_logs": []
+                }
+                
+                # Save user data
+                if save_user_data(name, user_data):
+                    st.session_state.current_user = name
+                    st.session_state.user_data = user_data
                     st.session_state.show_create_user = False
-                    st.session_state.show_login = False
-                    st.success(f"✨ Account created successfully! Welcome, {username}!")
-                    st.balloons()
+                    st.success(f"✨ Successfully created profile: {name}")
                     st.rerun()
                 else:
-                    st.error("❌ Failed to create account. Please try again.")
+                    st.error("❌ Failed to create profile. Please try again.")
+
+def show_user_logout():
+    """User logout interface"""
+    if st.session_state.current_user:
+        if st.button("🚪 Logout"):
+            st.session_state.current_user = None
+            st.session_state.user_data = None
+            st.session_state.recent_meal_logs = []
+            st.session_state.recent_water_logs = []
+            st.session_state.meal_summary = {"calories": 0, "protein": 0, "carbs": 0, "fat": 0}
+            st.success("👋 Logged out successfully!")
+            st.rerun()
 
 def save_current_user_data():
     """Save current user's data to file"""
@@ -922,7 +908,6 @@ def main():
             show_user_creation()
             if st.button("← Back to Login"):
                 st.session_state.show_create_user = False
-                st.session_state.show_login = True
                 st.rerun()
         else:
             show_user_login()
@@ -956,7 +941,6 @@ def main():
         st.session_state.recent_meal_logs = []
         st.session_state.recent_water_logs = []
         st.session_state.meal_summary = {"calories": 0, "protein": 0, "carbs": 0, "fat": 0}
-        st.session_state.show_login = True
         st.rerun()
     
     # Delete account button (with confirmation)
@@ -969,7 +953,6 @@ def main():
                     os.remove(user_file)
                     st.session_state.current_user = None
                     st.session_state.user_data = None
-                    st.session_state.show_login = True
                     st.success("✅ Account deleted successfully!")
                     st.rerun()
             except Exception as e:
