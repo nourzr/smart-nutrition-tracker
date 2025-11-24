@@ -1,7 +1,7 @@
-import json
-import re
-from datetime import datetime
 import streamlit as st
+import json
+from datetime import datetime
+import re
 import os
 
 # ----------------------------
@@ -15,36 +15,34 @@ def load_food_database():
         search_index = {food["names"]["en"].lower().strip(): food for food in foods}
         return foods, search_index
     except FileNotFoundError:
-        st.error("Food database not found. Please upload ciqual_2020_foods.json.")
+        st.error("❌ Food database not found. Please upload ciqual_2020_foods.json")
         return [], {}
 
 foods, search_index = load_food_database()
 
 # ----------------------------
-# 2. User database
+# 2. User persistence
 # ----------------------------
 USERS_FILE = "nutrition_users.json"
 
 def load_users():
-    try:
-        if os.path.exists(USERS_FILE):
+    if os.path.exists(USERS_FILE):
+        try:
             with open(USERS_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-    except Exception as e:
-        st.warning(f"Could not load users: {e}")
+        except:
+            return {}
     return {}
 
 def save_users(users):
-    try:
-        with open(USERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(users, f, indent=2, ensure_ascii=False)
-        return True
-    except Exception as e:
-        st.error(f"Error saving users: {e}")
-        return False
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(users, f, indent=2, ensure_ascii=False)
 
-users = load_users()
-active_user = None
+# Initialize session state
+if "users" not in st.session_state:
+    st.session_state.users = load_users()
+if "active_user" not in st.session_state:
+    st.session_state.active_user = None
 
 # ----------------------------
 # 3. Helper functions
@@ -68,7 +66,6 @@ def improve_ingredient_parsing(meal_input):
         if weight_match:
             weight = float(weight_match.group(1))
             food_name = re.sub(r'(\d+(?:\.\d+)?)\s*(?:g|grams?)\b', '', part).strip()
-            food_name = re.sub(r'^\s*(?:of|with|\-)\s*', '', food_name).strip()
         else:
             weight = 100
             food_name = part
@@ -79,21 +76,13 @@ def improve_ingredient_parsing(meal_input):
 
 def is_basic_ingredient(food):
     food_name = food["names"]["en"].lower()
-    complex_indicators = [
-        ",", "(", ")", "with", "and", "or", 
-        "prepared", "canned", "mix", "salad", "soup", "sauce", 
-        "dish", "recipe", "meal", "dinner", "lunch", "breakfast",
-        "cooked", "boiled", "fried", "grilled", "roasted", "baked", "steamed",
-        "sandwich", "burger", "pizza", "pasta", "stew", "curry", "stir-fry",
-        "casserole", "marinated", "breaded", "coated", "stuffed"
-    ]
+    complex_indicators = [",", "(", ")", "with", "and", "or", "prepared", "canned",
+                          "mix", "salad", "soup", "sauce", "dish", "recipe", "meal",
+                          "cooked", "fried", "grilled", "roasted", "baked", "steamed",
+                          "pizza", "pasta", "stew", "curry", "breaded"]
     for indicator in complex_indicators:
         if indicator in food_name:
             return False
-    main_ingredients = ["chicken", "beef", "pork", "fish", "rice", "pasta", "potato", "vegetable", "fruit", "cheese"]
-    found_count = sum(1 for ing in main_ingredients if ing in food_name)
-    if found_count > 1:
-        return False
     return True
 
 def find_basic_ingredients(name):
@@ -119,111 +108,144 @@ def find_basic_ingredients(name):
     return []
 
 def calculate_bmr(user):
+    weight, height, age = user["weight"], user["height"], user["age"]
     if user["gender"] == "male":
-        return 10*user["weight"] + 6.25*user["height"] - 5*user["age"] + 5
+        return 10 * weight + 6.25 * height - 5 * age + 5
     else:
-        return 10*user["weight"] + 6.25*user["height"] - 5*user["age"] - 161
+        return 10 * weight + 6.25 * height - 5 * age - 161
 
 def calculate_tdee(user):
     factors = {"sedentary":1.2, "light":1.375, "moderate":1.55, "active":1.725, "very active":1.9}
-    return calculate_bmr(user)*factors[user["activity"]]
+    return calculate_bmr(user) * factors[user["activity"]]
 
 def daily_calories(user):
     base = calculate_tdee(user)
-    if user["goal"] == "lose":
-        return base-500
-    elif user["goal"] == "gain":
-        return base+500
+    if user["goal"] == "lose": return base - 500
+    elif user["goal"] == "gain": return base + 500
     return base
 
 # ----------------------------
 # 4. Streamlit UI
 # ----------------------------
 st.title("🍎 Smart Nutrition Tracker")
+st.markdown("**Your personal food companion for healthier choices!**")
+st.markdown("---")
+st.markdown("💡 **Health Tip:** Drink at least 2 liters of water per day, include colorful vegetables, and balance your macros.")
 
-menu = ["Home", "Create/Switch User", "Log Food", "Daily Summary", "Show Profile"]
-choice = st.sidebar.selectbox("Menu", menu)
+st.subheader("Main Menu")
+menu_options = ["Create / Switch User", "Log Food", "Daily Summary", "Show Profile"]
+for option in menu_options:
+    if st.button(option):
+        st.session_state.selected_menu = option
 
-# Create/Switch User
-if choice == "Create/Switch User":
+# Initialize selected_menu
+if "selected_menu" not in st.session_state:
+    st.session_state.selected_menu = None
+
+# ----------------------------
+# 5. Menu functions
+# ----------------------------
+def create_or_switch_user():
+    st.subheader("👤 Create / Switch User")
     username = st.text_input("Enter username")
-    if st.button("Select/Create User"):
-        if not username:
-            st.warning("Enter a valid username")
-        elif username in users:
-            active_user = users[username]
-            st.success(f"Switched to existing user → {username}")
+    if username:
+        if username in st.session_state.users:
+            st.session_state.active_user = st.session_state.users[username]
+            st.success(f"✨ Switched to existing user: {username}")
         else:
             age = st.number_input("Age", 15, 100, 25)
             gender = st.selectbox("Gender", ["male", "female"])
             weight = st.number_input("Weight (kg)", 30, 300, 70)
             height = st.number_input("Height (cm)", 100, 250, 170)
             goal = st.selectbox("Goal", ["lose", "maintain", "gain"])
-            activity = st.selectbox("Activity level", ["sedentary", "light", "moderate", "active", "very active"])
-            active_user = {
-                "name": username, "age": age, "gender": gender, "weight": weight,
-                "height": height, "goal": goal, "activity": activity, "logs": [],
-                "created_at": datetime.now().isoformat()
-            }
-            users[username] = active_user
-            save_users(users)
-            st.success(f"User {username} created!")
+            activity = st.selectbox("Activity level", ["sedentary","light","moderate","active","very active"])
+            if st.button("Create User"):
+                user = {"name":username,"age":age,"gender":gender,"weight":weight,
+                        "height":height,"goal":goal,"activity":activity,"logs":[],"created_at":datetime.now().isoformat()}
+                st.session_state.users[username] = user
+                st.session_state.active_user = user
+                save_users(st.session_state.users)
+                st.success(f"✨ User {username} created and active!")
 
-# Log Food
-if choice == "Log Food":
-    if not active_user:
-        st.warning("Please create/select a user first.")
-    else:
-        meal_input = st.text_input("Enter what you ate (e.g., '150g chicken and 50g rice')")
-        if st.button("Log Meal") and meal_input:
-            ingredients = improve_ingredient_parsing(meal_input)
-            total_cal = total_pro = total_carbs = total_fat = 0
-            meal_logs = []
-            for ing in ingredients:
-                matches = find_basic_ingredients(ing["name"])
-                if not matches:
-                    st.warning(f"No basic ingredients found for '{ing['name']}'")
-                    continue
-                selected_food = matches[0]
-                ratio = ing["weight"]/100
-                cal = selected_food["nutrition"]["calories"]*ratio
-                pro = selected_food["nutrition"]["protein"]*ratio
-                carbs = selected_food["nutrition"]["carbs"]*ratio
-                fat = selected_food["nutrition"]["fat"]*ratio
-                total_cal += cal
-                total_pro += pro
-                total_carbs += carbs
-                total_fat += fat
-                meal_logs.append({"food": selected_food["names"]["en"], "grams": ing["weight"], "nutrition": {"calories":round(cal,1),"protein":round(pro,1),"carbs":round(carbs,1),"fat":round(fat,1)}, "timestamp":datetime.now().isoformat()})
-            active_user["logs"].extend(meal_logs)
-            save_users(users)
-            st.success("Meal logged!")
-            st.write("Total Calories:", round(total_cal,1))
-            st.write("Protein:", round(total_pro,1), "g")
-            st.write("Carbs:", round(total_carbs,1), "g")
-            st.write("Fat:", round(total_fat,1), "g")
+def log_food():
+    if not st.session_state.active_user:
+        st.warning("❌ No active user. Please create or switch user first.")
+        return
+    st.subheader("🍽️ Log Food (Basic Ingredients Only)")
+    meal_input = st.text_input("Enter food items (e.g., '150g chicken, 50g rice')")
+    if st.button("Log Meal"):
+        ingredients = improve_ingredient_parsing(meal_input)
+        if not ingredients:
+            st.warning("❌ No valid ingredients found.")
+            return
+        total_cal = total_pro = total_carbs = total_fat = 0
+        for ing in ingredients:
+            matches = find_basic_ingredients(ing["name"])
+            if not matches:
+                st.info(f"❌ No matches for {ing['name']}, skipped.")
+                continue
+            selected = matches[0]
+            ratio = ing["weight"]/100
+            cal = selected["nutrition"]["calories"]*ratio
+            pro = selected["nutrition"]["protein"]*ratio
+            carbs = selected["nutrition"]["carbs"]*ratio
+            fat = selected["nutrition"]["fat"]*ratio
+            total_cal += cal
+            total_pro += pro
+            total_carbs += carbs
+            total_fat += fat
+            st.session_state.active_user["logs"].append({
+                "food": selected["names"]["en"],
+                "food_id": selected["id"],
+                "grams": ing["weight"],
+                "nutrition":{"calories":round(cal,1),"protein":round(pro,1),"carbs":round(carbs,1),"fat":round(fat,1)},
+                "timestamp": datetime.now().isoformat()
+            })
+        save_users(st.session_state.users)
+        st.success(f"✅ Meal logged! Calories: {total_cal:.1f}, Protein: {total_pro:.1f}g")
 
-# Daily Summary
-if choice == "Daily Summary":
-    if not active_user:
-        st.warning("Please create/select a user first.")
-    else:
-        today = datetime.now().strftime("%Y-%m-%d")
-        logs = [x for x in active_user["logs"] if x["timestamp"].startswith(today)]
-        if not logs:
-            st.info("No food logged today")
-        else:
-            total_cal = sum(x["nutrition"]["calories"] for x in logs)
-            target_cal = daily_calories(active_user)
-            st.write("🔥 Calories:", round(total_cal,1), "/", round(target_cal,1))
-            st.write("💪 Protein:", round(sum(x["nutrition"]["protein"] for x in logs),1))
-            st.write("🥖 Carbs:", round(sum(x["nutrition"]["carbs"] for x in logs),1))
-            st.write("🥑 Fat:", round(sum(x["nutrition"]["fat"] for x in logs),1))
+def daily_summary():
+    if not st.session_state.active_user:
+        st.warning("❌ No active user. Please create or switch user first.")
+        return
+    st.subheader("📊 Daily Summary")
+    today = datetime.now().strftime("%Y-%m-%d")
+    logs = [x for x in st.session_state.active_user["logs"] if x["timestamp"].startswith(today)]
+    if not logs:
+        st.info("📋 No food logged today.")
+        return
+    total_cal = sum(x["nutrition"]["calories"] for x in logs)
+    total_pro = sum(x["nutrition"]["protein"] for x in logs)
+    total_carbs = sum(x["nutrition"]["carbs"] for x in logs)
+    total_fat = sum(x["nutrition"]["fat"] for x in logs)
+    target_cal = daily_calories(st.session_state.active_user)
+    st.write(f"🔥 Calories: {total_cal:.1f} / {target_cal:.1f} kcal")
+    st.write(f"💪 Protein: {total_pro:.1f} g")
+    st.write(f"🥖 Carbs: {total_carbs:.1f} g")
+    st.write(f"🥑 Fat: {total_fat:.1f} g")
 
-# Show Profile
-if choice == "Show Profile":
-    if not active_user:
-        st.warning("Please create/select a user first.")
-    else:
-        st.subheader(f"Profile: {active_user['name']}")
-        st.write(active_user)
+def show_profile():
+    if not st.session_state.active_user:
+        st.warning("❌ No active user. Please create or switch user first.")
+        return
+    user = st.session_state.active_user
+    st.subheader("👤 Profile")
+    st.write(f"**Name:** {user['name']}")
+    st.write(f"**Age:** {user['age']} years")
+    st.write(f"**Gender:** {user['gender']}")
+    st.write(f"**Weight:** {user['weight']} kg")
+    st.write(f"**Height:** {user['height']} cm")
+    st.write(f"**Goal:** {user['goal']}")
+    st.write(f"**Activity:** {user['activity']}")
+
+# ----------------------------
+# 6. Display selected menu
+# ----------------------------
+if st.session_state.selected_menu == "Create / Switch User":
+    create_or_switch_user()
+elif st.session_state.selected_menu == "Log Food":
+    log_food()
+elif st.session_state.selected_menu == "Daily Summary":
+    daily_summary()
+elif st.session_state.selected_menu == "Show Profile":
+    show_profile()
