@@ -35,14 +35,42 @@ def load_food_database():
 foods, search_index = load_food_database()
 
 # ----------------------------
-# 2. User management with session state
+# 2. User management with PERSISTENT storage
 # ----------------------------
+USERS_FILE = "nutrition_users.json"
+
+def load_users():
+    """Safely load user data from file"""
+    try:
+        if os.path.exists(USERS_FILE):
+            with open(USERS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except (json.JSONDecodeError, Exception) as e:
+        st.warning(f"⚠️ Could not load user data: {e}")
+    return {}
+
+def save_users(users_data):
+    """Save user data to file"""
+    try:
+        with open(USERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(users_data, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        st.error(f"❌ Error saving user data: {e}")
+        return False
+
+# Initialize session state
 if 'users' not in st.session_state:
-    st.session_state.users = {}
+    st.session_state.users = load_users()
+    
 if 'active_user' not in st.session_state:
     st.session_state.active_user = None
+    
 if 'show_create_user' not in st.session_state:
     st.session_state.show_create_user = False
+    
+if 'food_logged' not in st.session_state:
+    st.session_state.food_logged = False
 
 # ----------------------------
 # 3. Helper functions
@@ -295,6 +323,8 @@ def show_user_creation():
                 st.session_state.users[name] = user_data
                 st.session_state.active_user = user_data
                 st.session_state.show_create_user = False
+                # Save to file
+                save_users(st.session_state.users)
                 st.success(f"✨ Successfully created user: {name}")
                 st.rerun()
 
@@ -302,7 +332,7 @@ def show_user_selection():
     """User selection dropdown"""
     if st.session_state.users:
         user_names = list(st.session_state.users.keys())
-        current_user = st.session_state.active_user["name"] if st.session_state.active_user else None
+        current_user = st.session_state.active_user["name"] if st.session_state.active_user else user_names[0] if user_names else None
         
         selected_user = st.selectbox(
             "Select User",
@@ -310,7 +340,7 @@ def show_user_selection():
             index=user_names.index(current_user) if current_user in user_names else 0
         )
         
-        if selected_user and st.session_state.active_user and selected_user != st.session_state.active_user["name"]:
+        if selected_user and (not st.session_state.active_user or selected_user != st.session_state.active_user["name"]):
             st.session_state.active_user = st.session_state.users[selected_user]
             st.rerun()
 
@@ -325,7 +355,8 @@ def log_food_ui():
     meal_input = st.text_area(
         "What did you eat?",
         placeholder="e.g., '150g chicken and 50g rice' or 'chicken breast'",
-        help="💡 Tip: You can include weights like 'chicken 150g' or just type food names"
+        help="💡 Tip: You can include weights like 'chicken 150g' or just type food names",
+        key="meal_input"
     )
     
     if st.button("Log Food") and meal_input:
@@ -397,7 +428,6 @@ def log_food_ui():
                 # Display matches
                 st.write(f"🍎 Basic ingredient options for '{ing['name']}':")
                 
-                selected_food = None
                 if matches:
                     # Create selection interface
                     food_options = []
@@ -455,7 +485,17 @@ def log_food_ui():
 
             # Add to user's logs
             if meal_logs:
+                # Update the user's logs
                 st.session_state.active_user["logs"].extend(meal_logs)
+                
+                # Update the main users dictionary
+                st.session_state.users[st.session_state.active_user["name"]] = st.session_state.active_user
+                
+                # Save to file
+                save_users(st.session_state.users)
+                
+                # Set flag to trigger refresh
+                st.session_state.food_logged = True
                 
                 # Show summary
                 st.success("✨ MEAL LOGGED SUCCESSFULLY ✨")
@@ -474,6 +514,9 @@ def log_food_ui():
                     st.write(f"   • {log['food']} ({log['grams']}g)")
                 
                 st.balloons()
+                
+                # Auto-refresh the summary
+                st.rerun()
             else:
                 st.error("❌ No foods were logged. Please try again.")
 
@@ -489,6 +532,22 @@ def show_daily_summary_ui():
     user = st.session_state.active_user
     today = datetime.now().strftime("%Y-%m-%d")
     logs = [x for x in user["logs"] if x["timestamp"].startswith(today)]
+    
+    # Show food history
+    if logs:
+        st.subheader("📝 Today's Food Log")
+        for i, log in enumerate(logs):
+            with st.expander(f"{i+1}. {log['food']} ({log['grams']}g)"):
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Calories", f"{log['nutrition']['calories']:.1f}")
+                with col2:
+                    st.metric("Protein", f"{log['nutrition']['protein']:.1f}g")
+                with col3:
+                    st.metric("Carbs", f"{log['nutrition']['carbs']:.1f}g")
+                with col4:
+                    st.metric("Fat", f"{log['nutrition']['fat']:.1f}g")
+                st.caption(f"Logged at: {log['timestamp'][11:16]}")
     
     if not logs:
         st.info("📊 No food logged today.")
@@ -576,6 +635,17 @@ def show_user_profile():
         st.write(f"**Height:** {user['height']} cm")
         st.write(f"**Goal:** {user['goal']}")
     
+    # Show user history stats
+    total_logs = len(user["logs"])
+    unique_days = len(set(log["timestamp"][:10] for log in user["logs"]))
+    
+    st.subheader("📊 History Stats")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Total Logs", total_logs)
+    with col2:
+        st.metric("Days Tracked", unique_days)
+    
     # Calculate and display targets
     bmr = calculate_bmr(user)
     tdee = calculate_tdee(user)
@@ -617,9 +687,18 @@ def main():
         
         if st.session_state.active_user:
             st.success(f"Active: {st.session_state.active_user['name']}")
+            
+            # Show quick stats in sidebar
+            today = datetime.now().strftime("%Y-%m-%d")
+            today_logs = [x for x in st.session_state.active_user["logs"] if x["timestamp"].startswith(today)]
+            total_cal_today = sum(x["nutrition"]["calories"] for x in today_logs)
+            
+            st.metric("Today's Calories", f"{total_cal_today:.0f}")
+            
             if st.button("Delete Current User"):
                 if st.session_state.active_user['name'] in st.session_state.users:
                     del st.session_state.users[st.session_state.active_user['name']]
+                    save_users(st.session_state.users)
                     st.session_state.active_user = None
                     st.rerun()
     
