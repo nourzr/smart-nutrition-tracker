@@ -69,8 +69,11 @@ if 'active_user' not in st.session_state:
 if 'show_create_user' not in st.session_state:
     st.session_state.show_create_user = False
     
-if 'food_logged' not in st.session_state:
-    st.session_state.food_logged = False
+if 'recent_meal_logs' not in st.session_state:
+    st.session_state.recent_meal_logs = []
+    
+if 'meal_summary' not in st.session_state:
+    st.session_state.meal_summary = {"calories": 0, "protein": 0, "carbs": 0, "fat": 0}
 
 # ----------------------------
 # 3. Helper functions
@@ -352,126 +355,139 @@ def log_food_ui():
         
     st.header("🍽️ Log Food")
     
-    meal_input = st.text_area(
-        "What did you eat?",
-        placeholder="e.g., '150g chicken and 50g rice' or 'chicken breast'",
-        help="💡 Tip: You can include weights like 'chicken 150g' or just type food names",
-        key="meal_input"
-    )
+    # Show recent meal logs immediately
+    if st.session_state.recent_meal_logs:
+        st.subheader("📝 Recently Logged Foods")
+        for i, log in enumerate(st.session_state.recent_meal_logs[-5:]):  # Show last 5 items
+            col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+            with col1:
+                st.write(f"**{log['food']}** ({log['grams']}g)")
+            with col2:
+                st.write(f"🔥 {log['nutrition']['calories']:.0f} cal")
+            with col3:
+                st.write(f"🥩 {log['nutrition']['protein']:.1f}g")
+            with col4:
+                st.write(f"⏰ {log['timestamp'][11:16]}")
+        
+        # Show meal summary
+        if st.session_state.meal_summary["calories"] > 0:
+            st.subheader("📊 Current Meal Summary")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("🔥 Calories", f"{st.session_state.meal_summary['calories']:.1f}")
+            with col2:
+                st.metric("💪 Protein", f"{st.session_state.meal_summary['protein']:.1f}g")
+            with col3:
+                st.metric("🥖 Carbs", f"{st.session_state.meal_summary['carbs']:.1f}g")
+            with col4:
+                st.metric("🥑 Fat", f"{st.session_state.meal_summary['fat']:.1f}g")
     
-    if st.button("Log Food") and meal_input:
-        with st.spinner("Processing your meal..."):
-            # Parse ingredients
-            ingredients = improve_ingredient_parsing(meal_input)
+    # Food input section
+    st.subheader("➕ Add New Food")
+    
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        food_input = st.text_input(
+            "Food Name",
+            placeholder="e.g., chicken breast, brown rice, apple",
+            help="Enter basic ingredients only"
+        )
+    with col2:
+        serving_size = st.number_input(
+            "Serving Size (g)",
+            min_value=1,
+            max_value=1000,
+            value=100,
+            help="Weight in grams"
+        )
+    
+    if food_input and serving_size:
+        # Auto-detect category
+        category_groups = detect_food_category(food_input)
+        
+        # Find matching foods
+        matches = find_basic_ingredients(food_input, category_groups)
+        
+        if matches:
+            st.subheader("🔍 Matching Foods")
             
-            if not ingredients:
-                st.error("❌ No valid ingredients found. Please try again.")
-                return
-            
-            total_cal = total_pro = total_carbs = total_fat = 0
-            meal_logs = []
-            
-            st.write(f"🔍 Found {len(ingredients)} ingredient(s) to log...")
-            
-            for i, ing in enumerate(ingredients):
-                st.write(f"**--- Ingredient {i+1}/{len(ingredients)}: '{ing['name']}' ({ing['weight']}g) ---**")
+            # Create selection interface
+            for idx, food in enumerate(matches):
+                nutrition = food["nutrition"]
+                is_basic = is_basic_ingredient(food)
+                basic_indicator = "✅ BASIC" if is_basic else "⚠️ COMPLEX"
                 
-                # Auto-detect category
-                category_groups = detect_food_category(ing['name'])
-                
-                # Find matching foods
-                matches = find_basic_ingredients(ing['name'], category_groups)
-                
-                if not matches:
-                    st.error(f"❌ No basic ingredients found for '{ing['name']}'.")
-                    st.info("💡 Try searching for more specific terms like 'chicken breast' or 'brown rice'")
-                    
-                    # Manual entry option
-                    with st.expander(f"Enter nutrition manually for '{ing['name']}'"):
-                        col1, col2, col3, col4 = st.columns(4)
-                        with col1:
-                            manual_cal = st.number_input("Calories/100g", min_value=0.0, value=100.0, key=f"cal_{i}")
-                        with col2:
-                            manual_pro = st.number_input("Protein/100g", min_value=0.0, value=10.0, key=f"pro_{i}")
-                        with col3:
-                            manual_carbs = st.number_input("Carbs/100g", min_value=0.0, value=10.0, key=f"carbs_{i}")
-                        with col4:
-                            manual_fat = st.number_input("Fat/100g", min_value=0.0, value=5.0, key=f"fat_{i}")
+                col1, col2, col3 = st.columns([3, 2, 1])
+                with col1:
+                    st.write(f"**{food['names']['en']}**")
+                    st.caption(f"{basic_indicator} | {food['group']}")
+                with col2:
+                    st.write(f"🔥 {nutrition['calories']} cal/100g")
+                    st.write(f"🥩 {nutrition['protein']}g protein")
+                with col3:
+                    if st.button(f"Add", key=f"add_{idx}"):
+                        # Calculate nutrition for the serving size
+                        ratio = serving_size / 100
+                        cal = nutrition["calories"] * ratio
+                        pro = nutrition["protein"] * ratio
+                        carbs = nutrition["carbs"] * ratio
+                        fat = nutrition["fat"] * ratio
                         
-                        if st.button(f"Add Manual Entry", key=f"add_manual_{i}"):
-                            ratio = ing['weight'] / 100
-                            cal = manual_cal * ratio
-                            pro = manual_pro * ratio
-                            carbs = manual_carbs * ratio
-                            fat = manual_fat * ratio
-                            
-                            total_cal += cal
-                            total_pro += pro
-                            total_carbs += carbs
-                            total_fat += fat
-                            
-                            meal_logs.append({
-                                "food": f"{ing['name']} (manual entry)",
-                                "food_id": 0,
-                                "grams": ing['weight'],
-                                "nutrition": {
-                                    "calories": round(cal, 1),
-                                    "protein": round(pro, 1),
-                                    "carbs": round(carbs, 1),
-                                    "fat": round(fat, 1)
-                                },
-                                "timestamp": datetime.now().isoformat()
-                            })
-                            st.success(f"✅ Logged {ing['name']} (manual entry) ({ing['weight']}g)")
-                    continue
-
-                # Display matches
-                st.write(f"🍎 Basic ingredient options for '{ing['name']}':")
-                
-                if matches:
-                    # Create selection interface
-                    food_options = []
-                    for idx, food in enumerate(matches):
-                        nutrition = food["nutrition"]
-                        is_basic = is_basic_ingredient(food)
-                        basic_indicator = "✅ BASIC" if is_basic else "⚠️ COMPLEX"
+                        # Create log entry
+                        log_entry = {
+                            "food": food["names"]["en"],
+                            "food_id": food["id"],
+                            "grams": serving_size,
+                            "nutrition": {
+                                "calories": round(cal, 1),
+                                "protein": round(pro, 1),
+                                "carbs": round(carbs, 1),
+                                "fat": round(fat, 1)
+                            },
+                            "timestamp": datetime.now().isoformat()
+                        }
                         
-                        option_text = (
-                            f"{basic_indicator}: {food['names']['en']} | "
-                            f"📊 {nutrition['calories']} kcal | 🥩 {nutrition['protein']}g protein | "
-                            f"🥖 {nutrition['carbs']}g carbs | 🥑 {nutrition['fat']}g fat"
-                        )
-                        food_options.append(option_text)
+                        # Add to user's logs
+                        st.session_state.active_user["logs"].append(log_entry)
+                        
+                        # Update recent logs and summary
+                        st.session_state.recent_meal_logs.append(log_entry)
+                        st.session_state.meal_summary["calories"] += cal
+                        st.session_state.meal_summary["protein"] += pro
+                        st.session_state.meal_summary["carbs"] += carbs
+                        st.session_state.meal_summary["fat"] += fat
+                        
+                        # Update the main users dictionary and save
+                        st.session_state.users[st.session_state.active_user["name"]] = st.session_state.active_user
+                        save_users(st.session_state.users)
+                        
+                        st.success(f"✅ Added {food['names']['en']} ({serving_size}g)")
+                        st.rerun()
+            
+            # Manual entry option
+            with st.expander("🔧 Can't find your food? Enter manually"):
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    manual_cal = st.number_input("Calories/100g", min_value=0.0, value=100.0, key="manual_cal")
+                with col2:
+                    manual_pro = st.number_input("Protein/100g", min_value=0.0, value=10.0, key="manual_pro")
+                with col3:
+                    manual_carbs = st.number_input("Carbs/100g", min_value=0.0, value=10.0, key="manual_carbs")
+                with col4:
+                    manual_fat = st.number_input("Fat/100g", min_value=0.0, value=5.0, key="manual_fat")
+                
+                if st.button("Add Manual Entry"):
+                    ratio = serving_size / 100
+                    cal = manual_cal * ratio
+                    pro = manual_pro * ratio
+                    carbs = manual_carbs * ratio
+                    fat = manual_fat * ratio
                     
-                    # Let user select
-                    selected_option = st.selectbox(
-                        f"Choose option for '{ing['name']}'",
-                        options=range(len(food_options)),
-                        format_func=lambda x: food_options[x],
-                        key=f"select_{i}"
-                    )
-                    
-                    selected_food = matches[selected_option]
-                    grams = ing["weight"]
-
-                    # Calculate nutrition
-                    ratio = grams / 100
-                    cal = selected_food["nutrition"]["calories"] * ratio
-                    pro = selected_food["nutrition"]["protein"] * ratio
-                    carbs = selected_food["nutrition"]["carbs"] * ratio
-                    fat = selected_food["nutrition"]["fat"] * ratio
-
-                    # Update totals
-                    total_cal += cal
-                    total_pro += pro
-                    total_carbs += carbs
-                    total_fat += fat
-
-                    # Log this food
-                    meal_logs.append({
-                        "food": selected_food["names"]["en"],
-                        "food_id": selected_food["id"],
-                        "grams": grams,
+                    # Create log entry
+                    log_entry = {
+                        "food": f"{food_input} (manual)",
+                        "food_id": 0,
+                        "grams": serving_size,
                         "nutrition": {
                             "calories": round(cal, 1),
                             "protein": round(pro, 1),
@@ -479,46 +495,84 @@ def log_food_ui():
                             "fat": round(fat, 1)
                         },
                         "timestamp": datetime.now().isoformat()
-                    })
-
-                    st.success(f"✅ Logged {selected_food['names']['en']} ({grams}g)")
-
-            # Add to user's logs
-            if meal_logs:
-                # Update the user's logs
-                st.session_state.active_user["logs"].extend(meal_logs)
+                    }
+                    
+                    # Add to user's logs
+                    st.session_state.active_user["logs"].append(log_entry)
+                    
+                    # Update recent logs and summary
+                    st.session_state.recent_meal_logs.append(log_entry)
+                    st.session_state.meal_summary["calories"] += cal
+                    st.session_state.meal_summary["protein"] += pro
+                    st.session_state.meal_summary["carbs"] += carbs
+                    st.session_state.meal_summary["fat"] += fat
+                    
+                    # Update the main users dictionary and save
+                    st.session_state.users[st.session_state.active_user["name"]] = st.session_state.active_user
+                    save_users(st.session_state.users)
+                    
+                    st.success(f"✅ Added {food_input} ({serving_size}g) - Manual Entry")
+                    st.rerun()
+        
+        else:
+            st.warning("❌ No basic ingredients found. Try more specific terms like 'chicken breast' or 'brown rice'")
+            
+            # Manual entry as fallback
+            st.subheader("🔧 Enter Nutrition Manually")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                manual_cal = st.number_input("Calories per 100g", min_value=0.0, value=100.0, key="manual_cal_fallback")
+            with col2:
+                manual_pro = st.number_input("Protein per 100g", min_value=0.0, value=10.0, key="manual_pro_fallback")
+            with col3:
+                manual_carbs = st.number_input("Carbs per 100g", min_value=0.0, value=10.0, key="manual_carbs_fallback")
+            with col4:
+                manual_fat = st.number_input("Fat per 100g", min_value=0.0, value=5.0, key="manual_fat_fallback")
+            
+            if st.button("Add Food Manually"):
+                ratio = serving_size / 100
+                cal = manual_cal * ratio
+                pro = manual_pro * ratio
+                carbs = manual_carbs * ratio
+                fat = manual_fat * ratio
                 
-                # Update the main users dictionary
+                # Create log entry
+                log_entry = {
+                    "food": f"{food_input} (manual)",
+                    "food_id": 0,
+                    "grams": serving_size,
+                    "nutrition": {
+                        "calories": round(cal, 1),
+                        "protein": round(pro, 1),
+                        "carbs": round(carbs, 1),
+                        "fat": round(fat, 1)
+                    },
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                # Add to user's logs
+                st.session_state.active_user["logs"].append(log_entry)
+                
+                # Update recent logs and summary
+                st.session_state.recent_meal_logs.append(log_entry)
+                st.session_state.meal_summary["calories"] += cal
+                st.session_state.meal_summary["protein"] += pro
+                st.session_state.meal_summary["carbs"] += carbs
+                st.session_state.meal_summary["fat"] += fat
+                
+                # Update the main users dictionary and save
                 st.session_state.users[st.session_state.active_user["name"]] = st.session_state.active_user
-                
-                # Save to file
                 save_users(st.session_state.users)
                 
-                # Set flag to trigger refresh
-                st.session_state.food_logged = True
-                
-                # Show summary
-                st.success("✨ MEAL LOGGED SUCCESSFULLY ✨")
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("🔥 Calories", f"{total_cal:.1f} kcal")
-                with col2:
-                    st.metric("💪 Protein", f"{total_pro:.1f} g")
-                with col3:
-                    st.metric("🥖 Carbs", f"{total_carbs:.1f} g")
-                with col4:
-                    st.metric("🥑 Fat", f"{total_fat:.1f} g")
-                
-                st.write("📝 Logged items:")
-                for log in meal_logs:
-                    st.write(f"   • {log['food']} ({log['grams']}g)")
-                
-                st.balloons()
-                
-                # Auto-refresh the summary
+                st.success(f"✅ Added {food_input} ({serving_size}g) - Manual Entry")
                 st.rerun()
-            else:
-                st.error("❌ No foods were logged. Please try again.")
+    
+    # Clear current meal button
+    if st.session_state.recent_meal_logs:
+        if st.button("🔄 Clear Current Meal", type="secondary"):
+            st.session_state.recent_meal_logs = []
+            st.session_state.meal_summary = {"calories": 0, "protein": 0, "carbs": 0, "fat": 0}
+            st.rerun()
 
 def show_daily_summary_ui():
     """Daily summary interface"""
@@ -537,7 +591,7 @@ def show_daily_summary_ui():
     if logs:
         st.subheader("📝 Today's Food Log")
         for i, log in enumerate(logs):
-            with st.expander(f"{i+1}. {log['food']} ({log['grams']}g)"):
+            with st.expander(f"{i+1}. {log['food']} ({log['grams']}g) - {log['timestamp'][11:16]}"):
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     st.metric("Calories", f"{log['nutrition']['calories']:.1f}")
@@ -547,7 +601,6 @@ def show_daily_summary_ui():
                     st.metric("Carbs", f"{log['nutrition']['carbs']:.1f}g")
                 with col4:
                     st.metric("Fat", f"{log['nutrition']['fat']:.1f}g")
-                st.caption(f"Logged at: {log['timestamp'][11:16]}")
     
     if not logs:
         st.info("📊 No food logged today.")
@@ -692,14 +745,17 @@ def main():
             today = datetime.now().strftime("%Y-%m-%d")
             today_logs = [x for x in st.session_state.active_user["logs"] if x["timestamp"].startswith(today)]
             total_cal_today = sum(x["nutrition"]["calories"] for x in today_logs)
+            target_cal = daily_calories(st.session_state.active_user)
             
-            st.metric("Today's Calories", f"{total_cal_today:.0f}")
+            st.metric("Today's Calories", f"{total_cal_today:.0f}", f"{total_cal_today - target_cal:.0f}")
             
             if st.button("Delete Current User"):
                 if st.session_state.active_user['name'] in st.session_state.users:
                     del st.session_state.users[st.session_state.active_user['name']]
                     save_users(st.session_state.users)
                     st.session_state.active_user = None
+                    st.session_state.recent_meal_logs = []
+                    st.session_state.meal_summary = {"calories": 0, "protein": 0, "carbs": 0, "fat": 0}
                     st.rerun()
     
     # Main content area
