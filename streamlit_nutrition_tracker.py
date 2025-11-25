@@ -4,7 +4,6 @@ from datetime import datetime
 import re
 import os
 import hashlib
-import secrets
 
 # Page configuration
 st.set_page_config(
@@ -57,14 +56,20 @@ def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def load_user_data(username):
-    """Load data for a specific user"""
+    """Load data for a specific user - FIXED VERSION"""
     ensure_users_dir()
     user_file = get_user_file(username)
     
     try:
         if os.path.exists(user_file):
             with open(user_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                # Ensure the data has all required sections
+                if "food_logs" not in data:
+                    data["food_logs"] = []
+                if "water_logs" not in data:
+                    data["water_logs"] = []
+                return data
     except (json.JSONDecodeError, Exception) as e:
         st.warning(f"⚠️ Could not load user data: {e}")
     
@@ -105,6 +110,24 @@ def create_new_user(username, password, profile_data):
     
     return save_user_data(username, user_data)
 
+def validate_user_data_structure(user_data):
+    """Ensure user data has all required fields"""
+    if not user_data:
+        return False
+        
+    required_sections = ["auth", "profile", "food_logs", "water_logs"]
+    for section in required_sections:
+        if section not in user_data:
+            return False
+            
+    # Ensure auth has required fields
+    auth_required = ["username", "password_hash", "created_at"]
+    for field in auth_required:
+        if field not in user_data["auth"]:
+            return False
+            
+    return True
+
 # ----------------------------
 # 3. Session State Management
 # ----------------------------
@@ -133,6 +156,13 @@ if 'recent_water_logs' not in st.session_state:
 # ----------------------------
 # 4. Helper functions
 # ----------------------------
+def save_current_user_data():
+    """Save current user's data to file - CRITICAL FUNCTION"""
+    if st.session_state.current_user and st.session_state.user_data:
+        success = save_user_data(st.session_state.current_user, st.session_state.user_data)
+        return success
+    return False
+
 def validate_user_data(user_data):
     """Validate user input ranges"""
     errors = []
@@ -406,21 +436,20 @@ def show_user_creation():
             else:
                 # Create new user account
                 if create_new_user(username, password, user_profile):
-                    st.session_state.current_user = username
-                    st.session_state.user_data = load_user_data(username)
-                    st.session_state.show_create_user = False
-                    st.session_state.show_login = False
-                    st.success(f"✨ Account created successfully! Welcome, {username}!")
-                    st.balloons()
-                    st.rerun()
+                    # Load the newly created user data
+                    user_data = load_user_data(username)
+                    if user_data:
+                        st.session_state.current_user = username
+                        st.session_state.user_data = user_data
+                        st.session_state.show_create_user = False
+                        st.session_state.show_login = False
+                        st.success(f"✨ Account created successfully! Welcome, {username}!")
+                        st.balloons()
+                        st.rerun()
+                    else:
+                        st.error("❌ Account created but failed to load data. Please login.")
                 else:
                     st.error("❌ Failed to create account. Please try again.")
-
-def save_current_user_data():
-    """Save current user's data to file"""
-    if st.session_state.current_user and st.session_state.user_data:
-        return save_user_data(st.session_state.current_user, st.session_state.user_data)
-    return False
 
 def log_water_ui():
     """Water logging interface"""
@@ -493,7 +522,7 @@ def log_water_ui():
         st.caption("• Drink during workouts")
 
 def log_water_amount(amount):
-    """Log water intake"""
+    """Log water intake - FIXED VERSION"""
     if not st.session_state.current_user:
         return
         
@@ -511,9 +540,10 @@ def log_water_amount(amount):
     st.session_state.recent_water_logs.append(water_log)
     
     # Save user data
-    save_current_user_data()
-    
-    st.success(f"✅ Logged {amount} ml of water!")
+    if save_current_user_data():
+        st.success(f"✅ Logged {amount} ml of water!")
+    else:
+        st.error("❌ Failed to save water log!")
     st.rerun()
 
 def log_food_ui():
@@ -627,9 +657,10 @@ def log_food_ui():
                         st.session_state.meal_summary["fat"] += fat
                         
                         # Save user data
-                        save_current_user_data()
-                        
-                        st.success(f"✅ Added {food['names']['en']} ({serving_size}g)")
+                        if save_current_user_data():
+                            st.success(f"✅ Added {food['names']['en']} ({serving_size}g)")
+                        else:
+                            st.error("❌ Failed to save food log!")
                         st.rerun()
             
             # Manual entry option
@@ -676,9 +707,10 @@ def log_food_ui():
                     st.session_state.meal_summary["fat"] += fat
                     
                     # Save user data
-                    save_current_user_data()
-                    
-                    st.success(f"✅ Added {food_input} ({serving_size}g) - Manual Entry")
+                    if save_current_user_data():
+                        st.success(f"✅ Added {food_input} ({serving_size}g) - Manual Entry")
+                    else:
+                        st.error("❌ Failed to save food log!")
                     st.rerun()
         
         else:
@@ -728,9 +760,10 @@ def log_food_ui():
                 st.session_state.meal_summary["fat"] += fat
                 
                 # Save user data
-                save_current_user_data()
-                
-                st.success(f"✅ Added {food_input} ({serving_size}g) - Manual Entry")
+                if save_current_user_data():
+                    st.success(f"✅ Added {food_input} ({serving_size}g) - Manual Entry")
+                else:
+                    st.error("❌ Failed to save food log!")
                 st.rerun()
     
     # Clear current meal button
@@ -948,6 +981,12 @@ def main():
         st.sidebar.metric("Calories", f"{total_cal_today:.0f}", f"{total_cal_today - target_cal:.0f}")
     with col2:
         st.sidebar.metric("Water", f"{total_water_today} ml", f"{total_water_today - water_target:.0f}")
+    
+    # Debug info (can be removed in production)
+    with st.sidebar.expander("🔍 Debug Info"):
+        st.write(f"Food logs: {len(st.session_state.user_data['food_logs'])}")
+        st.write(f"Water logs: {len(st.session_state.user_data.get('water_logs', []))}")
+        st.write(f"Data valid: {validate_user_data_structure(st.session_state.user_data)}")
     
     # Logout button
     if st.sidebar.button("🚪 Logout", type="secondary"):
